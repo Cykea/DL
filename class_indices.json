@@ -1,4 +1,7 @@
 {
-"0": "landslide",
-"1": "non_landslide"
+    "0": "daisy",
+    "1": "dandelion",
+    "2": "roses",
+    "3": "sunflowers",
+    "4": "tulips"
 }
