@@ -1,77 +1,174 @@
 import torch.nn as nn
 import torch
-
-# official pretrain weights
-model_urls = {
-    'vgg11': 'https://download.pytorch.org/models/vgg11-bbd30ac9.pth',
-    'vgg13': 'https://download.pytorch.org/models/vgg13-c768596a.pth',
-    'vgg16': 'https://download.pytorch.org/models/vgg16-397923af.pth',
-    'vgg19': 'https://download.pytorch.org/models/vgg19-dcbb9e9d.pth'
-}
+import torch.nn.functional as F
 
 
-class VGG(nn.Module):                                                       # 定义VGG类 继承nn.module父类
-    def __init__(self, features, num_classes=1000, init_weights=False):     # features特征函数， num_classes分类个数，weights网络权重初始化
-        super(VGG, self).__init__()
-        self.features = features
-        self.classifier = nn.Sequential(                                    # 分类网络结构
-            nn.Linear(512*7*7, 4096),                   # 输入展平的一维个数
-            nn.ReLU(True),                            # ReLU激活函数
-            nn.Dropout(p=0.5),                           # 减少过拟合_以0.5的比率失活训练参数
-            nn.Linear(4096, 4096),
-            nn.ReLU(True),
-            nn.Dropout(p=0.5),
-            nn.Linear(4096, num_classes)
-        )
+class GoogLeNet(nn.Module):
+    def __init__(self, num_classes=1000, aux_logits=True, init_weights=False):   # aux_logits=True布尔变量为是否使用辅助分类器
+        super(GoogLeNet, self).__init__()
+        self.aux_logits = aux_logits
+
+        self.conv1 = BasicConv2d(3, 64, kernel_size=7, stride=2, padding=3)
+        self.maxpool1 = nn.MaxPool2d(3, stride=2, ceil_mode=True)          # ceil_mode=True向上取整
+
+        self.conv2 = BasicConv2d(64, 64, kernel_size=1)
+        self.conv3 = BasicConv2d(64, 192, kernel_size=3, padding=1)
+        self.maxpool2 = nn.MaxPool2d(3, stride=2, ceil_mode=True)
+
+        self.inception3a = Inception(192, 64, 96, 128, 16, 32, 32)
+        self.inception3b = Inception(256, 128, 128, 192, 32, 96, 64)
+        self.maxpool3 = nn.MaxPool2d(3, stride=2, ceil_mode=True)
+
+        self.inception4a = Inception(480, 192, 96, 208, 16, 48, 64)
+        self.inception4b = Inception(512, 160, 112, 224, 24, 64, 64)
+        self.inception4c = Inception(512, 128, 128, 256, 24, 64, 64)
+        self.inception4d = Inception(512, 112, 144, 288, 32, 64, 64)
+        self.inception4e = Inception(528, 256, 160, 320, 32, 128, 128)
+        self.maxpool4 = nn.MaxPool2d(3, stride=2, ceil_mode=True)
+
+        self.inception5a = Inception(832, 256, 160, 320, 32, 128, 128)
+        self.inception5b = Inception(832, 384, 192, 384, 48, 128, 128)
+
+        if self.aux_logits:
+            self.aux1 = InceptionAux(512, num_classes)
+            self.aux2 = InceptionAux(528, num_classes)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.dropout = nn.Dropout(0.4)
+        self.fc = nn.Linear(1024, num_classes)
         if init_weights:
             self._initialize_weights()
 
-    def forward(self, x):               # forward正向传播 x为输入数据
+    def forward(self, x):
         # N x 3 x 224 x 224
-        x = self.features(x)
-        # N x 512 x 7 x 7
-        x = torch.flatten(x, start_dim=1)
-        # N x 512*7*7
-        x = self.classifier(x)
-        return x
+        x = self.conv1(x)
+        # N x 64 x 112 x 112
+        x = self.maxpool1(x)
+        # N x 64 x 56 x 56
+        x = self.conv2(x)
+        # N x 64 x 56 x 56
+        x = self.conv3(x)
+        # N x 192 x 56 x 56
+        x = self.maxpool2(x)
 
-    def _initialize_weights(self):            # 定义初始化权重函数
+        # N x 192 x 28 x 28
+        x = self.inception3a(x)
+        # N x 256 x 28 x 28
+        x = self.inception3b(x)
+        # N x 480 x 28 x 28
+        x = self.maxpool3(x)
+        # N x 480 x 14 x 14
+        x = self.inception4a(x)
+        # N x 512 x 14 x 14
+        if self.training and self.aux_logits:    # eval model lose this layer
+            aux1 = self.aux1(x)
+
+        x = self.inception4b(x)
+        # N x 512 x 14 x 14
+        x = self.inception4c(x)
+        # N x 512 x 14 x 14
+        x = self.inception4d(x)
+        # N x 528 x 14 x 14
+        if self.training and self.aux_logits:    # eval model lose this layer
+            aux2 = self.aux2(x)
+
+        x = self.inception4e(x)
+        # N x 832 x 14 x 14
+        x = self.maxpool4(x)
+        # N x 832 x 7 x 7
+        x = self.inception5a(x)
+        # N x 832 x 7 x 7
+        x = self.inception5b(x)
+        # N x 1024 x 7 x 7
+
+        x = self.avgpool(x)
+        # N x 1024 x 1 x 1
+        x = torch.flatten(x, 1)
+        # N x 1024
+        x = self.dropout(x)
+        x = self.fc(x)
+        # N x 1000 (num_classes)
+        if self.training and self.aux_logits:   # eval model lose this layer
+            return x, aux2, aux1   # 如果training为true，则返回这三个值
+        return x                      # 如果net.eval,self.training为false则返回x
+
+    def _initialize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                # nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                nn.init.xavier_uniform_(m.weight)                      # 若初始化权重函数遍历到卷积层，就用xavier初始化函数初始卷积核权重
-                if m.bias is not None:                   # 如果卷积核采用bias（偏置），则将偏置默认初始化为0
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):                    # 若初始化权重函数遍历到全连接层，就用xavier初始化函数初始全连接层权重
-                nn.init.xavier_uniform_(m.weight)
-                # nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.constant_(m.bias, 0)                      # 同样将偏置置为变量0
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
 
 
-def make_features(cfg: list):   # 提取特征 函数 make_feature   传入配置变量cfg list列表
-    layers = []                 # 定义空列表层 用来存放 所创建的每一层
-    in_channels = 3             # 定义变量 输入图片RGB 固 深度 为3
-    for v in cfg:
-        if v == "M":
-            layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
-        else:
-            conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=1)
-            layers += [conv2d, nn.ReLU(True)]
-            in_channels = v
-    return nn.Sequential(*layers)    # *表示非关键字参数传入
+class Inception(nn.Module):
+    def __init__(self, in_channels, ch1x1, ch3x3red, ch3x3, ch5x5red, ch5x5, pool_proj):
+        super(Inception, self).__init__()
+
+        self.branch1 = BasicConv2d(in_channels, ch1x1, kernel_size=1)
+
+        self.branch2 = nn.Sequential(
+            BasicConv2d(in_channels, ch3x3red, kernel_size=1),
+            BasicConv2d(ch3x3red, ch3x3, kernel_size=3, padding=1)   # 保证输出大小等于输入大小
+        )
+
+        self.branch3 = nn.Sequential(
+            BasicConv2d(in_channels, ch5x5red, kernel_size=1),
+            # 在官方的实现中，其实是3x3的kernel并不是5x5，这里我也懒得改了，具体可以参考下面的issue
+            # Please see https://github.com/pytorch/vision/issues/906 for details.
+            BasicConv2d(ch5x5red, ch5x5, kernel_size=5, padding=2)   # 保证输出大小等于输入大小
+        )
+
+        self.branch4 = nn.Sequential(
+            nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
+            BasicConv2d(in_channels, pool_proj, kernel_size=1)
+        )
+
+    def forward(self, x):
+        branch1 = self.branch1(x)
+        branch2 = self.branch2(x)
+        branch3 = self.branch3(x)
+        branch4 = self.branch4(x)
+
+        outputs = [branch1, branch2, branch3, branch4]
+        return torch.cat(outputs, 1)                  # torch.cat函数对四个分支进行合并，1为合并到维度，outputs为输出列表
 
 
-cfgs = {
-    'vgg11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],     # M代表maxpool池化层
-    'vgg13': [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
-    'vgg16': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'],
-    'vgg19': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512, 512, 'M'],
-}
+class InceptionAux(nn.Module):                     # 辅助分类器
+    def __init__(self, in_channels, num_classes):
+        super(InceptionAux, self).__init__()
+        self.averagePool = nn.AvgPool2d(kernel_size=5, stride=3)  # 平均池化下采样层
+        self.conv = BasicConv2d(in_channels, 128, kernel_size=1)  # output[batch, 128, 4, 4]
+
+        self.fc1 = nn.Linear(2048, 1024)
+        self.fc2 = nn.Linear(1024, num_classes)
+
+    def forward(self, x):
+        # aux1: N x 512 x 14 x 14, aux2: N x 528 x 14 x 14
+        x = self.averagePool(x)
+        # aux1: N x 512 x 4 x 4, aux2: N x 528 x 4 x 4
+        x = self.conv(x)
+        # N x 128 x 4 x 4
+        x = torch.flatten(x, 1)   # 1代表从channel维度开始展平，从128对应的1维开始
+        x = F.dropout(x, 0.5, training=self.training)
+        # N x 2048
+        x = F.relu(self.fc1(x), inplace=True)
+        x = F.dropout(x, 0.5, training=self.training)
+        # N x 1024
+        x = self.fc2(x)
+        # N x num_classes
+        return x
 
 
-def vgg(model_name="vgg16", **kwargs):
-    assert model_name in cfgs, "Warning: model number {} not in cfgs dict!".format(model_name)
-    cfg = cfgs[model_name]            # cfgs值传入字典，可得到上部数据
+class BasicConv2d(nn.Module):                       # 卷积Conv2d和ReLU激活函数共同使用，针对多个卷积层，定义BasicConv2d类
+    def __init__(self, in_channels, out_channels, **kwargs):
+        super(BasicConv2d, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, **kwargs)    # 每一个卷积层都要编写一个nn.Conv2d和一个nn.ReLU
+        self.relu = nn.ReLU(inplace=True)
 
-    model = VGG(make_features(cfg), **kwargs)             # **kwargs可变字典变量，可传入上边个数、网络权重初始化函数
-    return model
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.relu(x)
+        return x
