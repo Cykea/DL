@@ -4,13 +4,11 @@ import json
 
 import torch
 import torch.nn as nn
-from torchvision import transforms, datasets, utils
-import matplotlib.pyplot as plt
-import numpy as np
+from torchvision import transforms, datasets
 import torch.optim as optim
 from tqdm import tqdm
 
-from model import AlexNet
+from model import vgg
 
 
 def main():
@@ -18,11 +16,11 @@ def main():
     print("using {} device.".format(device))
 
     data_transform = {
-        "train": transforms.Compose([transforms.RandomResizedCrop(224),
-                                     transforms.RandomHorizontalFlip(),
-                                     transforms.ToTensor(),
-                                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]),
-        "val": transforms.Compose([transforms.Resize((224, 224)),  # cannot 224, must (224, 224)
+        "train": transforms.Compose([transforms.RandomResizedCrop(224),        # 随即裁剪
+                                     transforms.RandomHorizontalFlip(),          # 随机水平翻转
+                                     transforms.ToTensor(),                    # 转化为ToTensor格式
+                                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]),   # 标准化处理
+        "val": transforms.Compose([transforms.Resize((224, 224)),
                                    transforms.ToTensor(),
                                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])}
 
@@ -53,33 +51,23 @@ def main():
                                             transform=data_transform["val"])
     val_num = len(validate_dataset)
     validate_loader = torch.utils.data.DataLoader(validate_dataset,
-                                                  batch_size=4, shuffle=False,
+                                                  batch_size=batch_size, shuffle=False,
                                                   num_workers=nw)
-
     print("using {} images for training, {} images for validation.".format(train_num,
                                                                            val_num))
+
     # test_data_iter = iter(validate_loader)
     # test_image, test_label = test_data_iter.next()
-    #
-    # def imshow(img):
-    #     img = img / 2 + 0.5  # unnormalize
-    #     npimg = img.numpy()
-    #     plt.imshow(np.transpose(npimg, (1, 2, 0)))
-    #     plt.show()
-    #
-    # print(' '.join('%5s' % cla_dict[test_label[j].item()] for j in range(4)))
-    # imshow(utils.make_grid(test_image))
 
-    net = AlexNet(num_classes=5, init_weights=True)
-
+    model_name = "vgg16"
+    net = vgg(model_name=model_name, num_classes=5, init_weights=True)
     net.to(device)
     loss_function = nn.CrossEntropyLoss()
-    # pata = list(net.parameters())
-    optimizer = optim.Adam(net.parameters(), lr=0.0002)
+    optimizer = optim.Adam(net.parameters(), lr=0.0001)
 
-    epochs = 10
-    save_path = './AlexNet.pth'
+    epochs = 30
     best_acc = 0.0
+    save_path = './{}Net.pth'.format(model_name)
     train_steps = len(train_loader)
     for epoch in range(epochs):
         # train
